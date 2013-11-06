@@ -18,7 +18,7 @@ function()
         if debug then _G.print(...) end
     end
     
-    debug = false
+    --debug = true
     
     frame = CreateFrame("Frame")
     
@@ -30,6 +30,7 @@ function()
     mangled = mangled or false -- Set to true when mangle crits. On UNIT_COMBO_POINTS it gets set to false again.
     anticipatedCP = anticipatedCP or _G.GetComboPoints("player") -- This value is displayed.
     unresolvedComboPointEvents = unresolvedComboPointEvents or 0
+    expectedComboPointEvents = expectedComboPointEvents or 0
     cPGenerators = {
         [1822] = true, -- Rake
         [5221] = true, -- Shred
@@ -38,10 +39,13 @@ function()
         [102545] = true, -- Ravage!
         [114236] = true, -- Shred!
     }
+    mangle = {
+        [33876] = true,
+    }
     finishers = {
+        [1079] = true, -- Rip
         [22568] = true, -- Ferocious Bite
         [22570] = true, -- Maim
-        [1079] = true, -- Rip
         [127538] = true, -- Savage Roar
     }
     swipe = {
@@ -53,9 +57,8 @@ function()
     redirect = {
         [110730] = true,
     }
-    -- See http://www.wowhead.com/spell=138352
     comboPoint = {
-        [139546] = true,
+        [139546] = true, -- See http://www.wowhead.com/spell=138352
     }
     
     setAnticipatedCP =  function(cP)
@@ -81,28 +84,28 @@ function()
         if subEvent == "SPELL_CAST_SUCCESS" then
             if sourceGUID == UnitGUID("player") then
                 local  spellId, spellName =  ...
-                lastMove = spellId
                 if cPGenerators[spellId] then
+                    lastMove = nil
                     print(subEvent, spellName, spellId)
-                    if spellId == 33876 then -- Mangle.
+                    if mangle[spellId] then
                         -- Mangle is weird. This combat event happens noticeably before the first combo point is added.
-                        if destGUID == comboTarget then
-                            incrementCP()
-                        else
-                            setAnticipatedCP(1)
-                            comboTarget = destGUID
-                        end
+                        -- We could still get e.g. parried after this event happened. I'm guessing the combo target won't change
+                        -- in that scenario.
                     end
                 elseif finishers[spellId] then
+                    lastMove = spellId
                     -- We could also speed this up, but it seems pointless.
                     --anticipatedCP = 0
                     print(subEvent, spellName, spellId, "(" .. GetComboPoints("player") .. " cp)")
                 elseif swipe[spellId] then
+                    lastMove = nil
                     print(subEvent, spellName, spellId)
                     -- ...
                 elseif primalFury[spellId] then
+                    lastMove = spellId
                     print(subEvent, spellName, spellId)
                 elseif comboPoint[spellId] then
+                    lastMove = spellId
                     print(subEvent, spellName, spellId)
                 end
             end
@@ -110,19 +113,55 @@ function()
         elseif subEvent == "SPELL_DAMAGE" then
             if sourceGUID == UnitGUID("player") then
                 local spellId, spellName, _, _, _, _, _, _, _, critical = ...
-                if  destGUID == UnitGUID("target") and cPGenerators[spellId] and critical then
-                    -- We got a crit with one of our single-target combo moves.
-                    if spellId ==  33876 then
-                        -- It was Mangle. The game still won't have registered a single combo point. We added one when the spell cast succeeded.
-                        mangled = true -- Don't resync on the next UNIT_COMBO_POINTS event.
-                    else -- It's not Mangle: the initial combo point was added at this point.
-                        resyncCP()
-                    end
-                    --print("UnitCanAttack(\"player\", \"target\") == " .. UnitCanAttack("player", "target")  or "nil")
-                    --print("UnitHealth(\"target\") == ", UnitHealth("target"))
-                    incrementCP() -- Add another combo point.
+                if  cPGenerators[spellId] then
+                    -- We got a hit with one of our single-target combo moves.
                     print(subEvent, spellName, (critical and '' or "not ") .. "critical")
+                    lastMove = spellId
+                    if destGUID == UnitGUID("target") then -- We hit our target.
+                        if mangle[spellId] then
+                            -- It was Mangle. The game still won't have registered a single combo point.
+                            if comboTarget and destGUID == comboTarget then
+                                incrementCP()
+                            else
+                                setAnticipatedCP(1)
+                                comboTarget = destGUID
+                            end
+                            mangled = true -- Don't resync on the next UNIT_COMBO_POINTS event.
+                        end
+                        if critical then
+                            if not mangle[spellId] then -- It's not Mangle: the initial combo point was added at this point.
+                                resyncCP()
+                            end
+                            --print("UnitCanAttack(\"player\", \"target\") == " .. UnitCanAttack("player", "target")  or "nil")
+                            --print("UnitHealth(\"target\") == ", UnitHealth("target"))
+                            incrementCP() -- Add another combo point.
+                        end
+                    else -- We hit something, but it's not our target.
+                        if not comboTarget or destGUID ~= comboTarget then
+                            setAnticipatedCP(0)
+                            comboTarget = destGUID
+                        end
+                        if mangle[spellId] then
+                            incrementCP()
+                            expectedComboPointEvents = expectedComboPointEvents + 1
+                            if critical then
+                                incrementCP()
+                                expectedComboPointEvents = expectedComboPointEvents + 1
+                            end
+                            mangled = true -- Don't resync on the next UNIT_COMBO_POINTS event.
+                        elseif unresolvedComboPointEvents > 0 then
+                            incrementCP()
+                            unresolvedComboPointEvents = unresolvedComboPointEvents - 1
+                        end
+                        if not mangle[spellId] and critical then
+                            -- The UNIT_COMBO_POINT event for the fact that it's a crit wasn't posted yet.
+                            incrementCP()
+                            expectedComboPointEvents = expectedComboPointEvents + 1
+                        end
+                    end
                 elseif swipe[spellId] then
+                    print(subEvent, spellName)
+                    lastMove = spellId
                     -- When we have a combo target (a target with at leasts one CP; does it have to be alive?), Swipe will always try to
                     -- add combo points to that target. Regardless of wether it's our target. If we didn't hit it, nothing happens.
                     --
@@ -138,7 +177,6 @@ function()
                             -- UNIT_COMBO_POINTS event.
                         else
                             -- Add one combo point. Primal Fury isn't involved here.
-                            print(subEvent, spellName)
                             if unresolvedComboPointEvents > 0 then
                                 unresolvedComboPointEvents  = 0
                                 incrementCP()
@@ -151,7 +189,7 @@ function()
                             end
                         else -- No combo target, no target.
                             if unresolvedComboPointEvents > 0 then -- There were UNIT_COMBO_POINTS event we couldn't handle. One for
-                                -- each target we hit with swipe.
+                                -- each target we hit with swipe. This one's the first we hit and it'll be our combo target.
                                 comboTarget = destGUID
                                 unresolvedComboPointEvents  = 0
                                 incrementCP()
@@ -185,32 +223,47 @@ function()
                 mangled =  false
             end
         else -- No combo points on the target.
-            if lastMove and finishers[lastMove] then -- Did we use a finisher? SPELL_CAST_SUCCESS is posted before UNIT_COMBO_POINTS
-                -- with all finishers so we know.
+            if lastMove and finishers[lastMove] then -- Did we use a finisher?
+                -- SPELL_CAST_SUCCESS is posted before UNIT_COMBO_POINTS
+                -- for all finishers so we know.
                 setAnticipatedCP(0)
                 comboTarget = nil
                 lastMove = nil
             else
-                -- For Swipe, this event is handled before SPELL_CAST_SUCCESS.
-                -- Did we use swipe while not targeting our combo target? We don't know.
-                -- Let's wait for a second and then reset the combo points.
-                --WeakAurasAceEvents:SendMessage("ANTICIPATED_COMBO_POINTS", anticipatedCP, GetComboPoints("player"))
-                unresolvedComboPointEvents = unresolvedComboPointEvents + 1
-                WeakAurasTimers:ScheduleTimer(function()
-                        if unresolvedComboPointEvents > 0 then
-                            if GetComboPoints("player") == 0 then
-                                print("RESET!!!")
-                                mangled = false
-                                comboTarget = nil
-                                setAnticipatedCP(0)
-                            else
-                                comboTarget = UnitGUID("target")
-                            end
-                            unresolvedComboPointEvents = 0
-                        end
-                end, 1)
-                -- See http://www.wowace.com/addons/ace3/pages/api/ace-timer-3-0
+                -- For Swipe and single-target combo moves other than Mangle,
+                -- this event is handled before SPELL_CAST_SUCCESS.
+                -- Did we use Swipe while not targeting our combo target?
+                -- Did we use Shred on a unit that's not our target (anymore)?
+                -- We don't know.
+                -- Let's wait for a second so SPELL_DAMAGE can resolve.
+                -- If that event isn't posted reset the combo points.
+                if expectedComboPointEvents == 0 then
+                    unresolvedComboPointEvents = unresolvedComboPointEvents + 1
+                    if unresolvedComboPointEvents > 0 then
+                        -- Does this restart the timer when called while it's active? This is written assuming so.
+                        -- Maybe any UNIT_COMBO_POINT event should stop the timer first.
+                        WeakAurasTimers:ScheduleTimer(function()
+                                if unresolvedComboPointEvents > 0 then
+                                    if GetComboPoints("player") == 0 then
+                                        print("Resetting anticipated Combo Points")
+                                        mangled = false
+                                        comboTarget = nil
+                                        setAnticipatedCP(0)
+                                    else
+                                        comboTarget = UnitGUID("target")
+                                    end
+                                    unresolvedComboPointEvents = 0
+                                    expectedComboPointEvents = 0
+                                end
+                        end, 1)
+                        -- See http://www.wowace.com/addons/ace3/pages/api/ace-timer-3-0
+                    end
+                end
             end
+        end
+        if expectedComboPointEvents > 0 then
+            expectedComboPointEvents = expectedComboPointEvents - 1
+            lastMove = nil
         end
     end
     
@@ -231,6 +284,7 @@ function()
             setAnticipatedCP(0)
             mangled = false
             unresolvedComboPointEvents = 0
+            expectedComboPointEvents = 0
         end
     end
     
