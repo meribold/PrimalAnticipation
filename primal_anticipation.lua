@@ -46,7 +46,8 @@ function()
         [1079] = true, -- Rip
         [22568] = true, -- Ferocious Bite
         [22570] = true, -- Maim
-        [127538] = true, -- Savage Roar
+        [52610] = true, -- Savage Roar
+        [127538] = true, -- Savage Roar (glyphed)
     }
     swipe = {
         [62078] = true,
@@ -327,3 +328,4 @@ function(progress, r1, g1, b1, a1, r2, g2, b2, a2)
     end
 end
 
+-- vim: tw=100 sw=2 et
