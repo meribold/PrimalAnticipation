@@ -2,7 +2,7 @@ Primal Anticipation
 ===================
 
 **These WeakAuras are deprecated. Please use [this
-AddOn](http://www.curse.com/addons/wow/primalanticipation) instead**
+AddOn](http://www.curse.com/addons/wow/primalanticipation) instead.**
 
 You probably got here because you watched [this video](http://youtu.be/6vlZt7Gs8XU).
 
